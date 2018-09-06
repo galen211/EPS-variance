@@ -93,3 +93,12 @@ fcst_rank <- eps %>%
 fcst_rank
 ```
 
+Formatted table
+```{r}
+fcst_rank %>%
+  group_by(sector) %>%
+  top_n(-5, wt = fcst_rank_sector) %>%
+  select(sector, name, fcst_rank_sector) %>%
+  spread(fcst_rank_sector, name)
+```
+
