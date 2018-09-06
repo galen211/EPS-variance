@@ -1,0 +1,93 @@
+---
+title: "Analyzing Quandl EPS data"
+output:
+  pdf_document: default
+  html_notebook: default
+---
+
+## Setup workbook
+Install required packages
+```{r, message=FALSE, warning=FALSE}
+packages.used = c("readxl", "xlsx", "tidyr", "ggplot2", "stringr", "lubridate", "stringi", "dplyr","uuid","scales", "purrr", "readr", "knitr", "Quandl")
+
+# check packages that need to be installed.
+packages.needed=setdiff(packages.used, 
+                        intersect(installed.packages()[,1], 
+                                  packages.used))
+# install additional packages
+if(length(packages.needed)>0){
+  install.packages(packages.needed, dependencies = TRUE)
+}
+
+lapply(packages.used, require, character.only = TRUE)
+```
+
+## Relevant Quandl tables
+  -`IRH` Updated monthly, this database contains historical company guidance data for approximately 5,000 public companies going as far back as 2002.
+  -`MT` Master table showing company industry classification
+  -`EA` Updated daily, this database offers information on corporate earnings announcements expected over the next couple months for over 7,000 US and Canadian companies, including both confirmed and estimated dates with EPS estimates, as compiled by Zacks Investment Research.
+  
+*note*: quandl api key must be specified prior to executing fetch functions.
+```{r}
+irh <- Quandl.datatable('ZACKS/IRH') # earnings preannouncement history (i.e. guidance)
+mt <- Quandl.datatable('ZACKS/MT') # master table (company info)
+es <- Quandl.datatable('ZACKS/ES') # earnings announcement data
+```
+
+Data fields available in guidance data
+Documentation: (https://www.quandl.com/databases/ZPH/documentation/a-zacks-preannouncement-history)[]
+```{r}
+colnames(irh)
+```
+
+Data fields available in master table
+```{r}
+colnames(mt)
+```
+
+Data fields available in earnings announcement data
+Documentation: (https://www.quandl.com/databases/ZES/documentation/a-earnings-surprises)[]
+```{r}
+colnames(es)
+```
+
+Reformat `irh` earnings preannouncement data frame so that we only are looking at the latest quarterly eps guidance (i.e. we ignore the history of guidance updates until the one that is most recent prior to the actual eps announcement).
+```{r}
+qguid <- irh %>%
+  filter(est_type == "E" & per_type == "Q") %>%
+  select(m_ticker, announce_date, per_end_date, per_fisc_year, per_fisc_qtr, pa_mean) %>%
+  group_by(m_ticker, per_end_date) %>%
+  slice(which(max(announce_date) == announce_date)) %>%
+  rename(eps_fcst = pa_mean,
+         fcst_date = announce_date)
+```
+
+Reformat the `es` earnings surprise data to extract the actual quarterly eps for a particular period and join with the industry data in `mt` master table.
+```{r}
+x <- mt %>% select(m_ticker, comp_name, sic_4_desc)
+
+qeps <- es %>%
+  select(m_ticker, per_end_date, eps_act) %>%
+  left_join(x, by = c("m_ticker" = "m_ticker")) %>%
+  rename(industry_classification = sic_4_desc,
+         company_name = comp_name)
+```
+
+Join the actual quarterly eps data with the company guidance data
+```{r}
+eps <- left_join(qguid, qeps, by = c("m_ticker" = "m_ticker", "per_end_date" = "per_end_date")) %>%
+  mutate(eps_var_pct = (eps_fcst - eps_act) / eps_act) %>%
+  select(industry_classification, m_ticker, company_name, per_fisc_year, per_fisc_qtr, fcst_date, per_end_date, eps_fcst, eps_act, eps_var_pct) %>%
+  drop_na(eps_var_pct)
+
+kable(eps)
+```
+
+Use the consolidated quarterly eps data to rank companies by forecast accuracy quantile.  With expanded data set, it would be possible to rank companies within a particular industry, however the sample data size is too small
+```{r}
+fcst_rank <- eps %>% 
+  group_by(company_name) %>%
+  summarise(fcst_qtile = ntile(eps_var_pct, 4)) 
+
+fcst_rank
+```
