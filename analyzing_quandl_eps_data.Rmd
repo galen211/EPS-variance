@@ -86,8 +86,12 @@ kable(eps)
 Use the consolidated quarterly eps data to rank companies by forecast accuracy quantile.  With expanded data set, it would be possible to rank companies within a particular industry, however the sample data size is too small
 ```{r}
 fcst_rank <- eps %>% 
+  mutate(fcst_err = abs(eps_var_pct)) %>%
   group_by(company_name) %>%
-  summarise(fcst_qtile = ntile(eps_var_pct, 4)) 
+  summarise(avg_fcst_err = mean(fcst_err)) %>%
+  ungroup() %>%
+  mutate(fcst_rank = min_rank(avg_fcst_err)) %>%
+  arrange(desc(-fcst_rank))
 
 fcst_rank
 ```
