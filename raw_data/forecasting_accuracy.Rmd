@@ -1,0 +1,95 @@
+---
+title: "Analysis of Raw Data"
+output: html_notebook
+---
+
+Set up packages needed for analysis
+```{r message=FALSE, warning=FALSE}
+packages.used = c("readxl", "xlsx", "tidyr", "ggplot2", "stringr", "lubridate", "stringi", "dplyr","uuid","scales", "purrr", "readr", "clipr")
+
+# check packages that need to be installed.
+packages.needed=setdiff(packages.used, 
+                        intersect(installed.packages()[,1], 
+                                  packages.used))
+# install additional packages
+if(length(packages.needed)>0){
+  install.packages(packages.needed, dependencies = TRUE)
+}
+
+output <- lapply(packages.used, require, character.only = TRUE)
+
+all(output) # true if all code libraries are correctly loaded
+```
+
+Specify the raw data file
+```{r}
+file_raw_data <- file.path("raw_annual_data.xlsx")
+
+raw_data_sheets <- excel_sheets(path = file_raw_data)
+```
+
+Import the data from the raw data file sheet by sheet
+```{r message=FALSE, warning=FALSE}
+df <- raw_data_sheets %>%
+  map_df(~ read_excel(path = file_raw_data, sheet = .x, 
+                      skip = 1,
+                      col_names = c("Ticker", "FY06", "FY07", "FY08", "FY09", "FY10", "FY11", "FY12", "FY13", "FY14", "FY15", "FY16"),
+                      col_types = c("text","numeric","numeric","numeric","numeric","numeric","numeric","numeric","numeric","numeric","numeric","numeric"),
+                      na = c("#N/A N/A"),
+                      ) %>% mutate(sheet = .x))
+```
+
+Transform the data so that we have the FY in a single column (tidy format).
+```{r}
+eps <- df %>%
+  gather(key = "fiscal_year", value = "value", starts_with("FY")) %>%
+  rename(ticker = Ticker,
+         value_type = sheet) %>%
+  mutate(fiscal_year = as.integer(str_replace_all(fiscal_year, "FY","20")),
+         ticker = str_extract(ticker, "^([A-Z^\\w]*)")) %>%
+  drop_na(value)
+
+str(eps)
+```
+
+Import and join data on the sector specification of each S&P 500 component.
+```{r message=FALSE, warning=FALSE}
+ind <- read_csv(file = "constituents_csv.csv")
+colnames(ind) <- colnames(ind) %>% str_to_lower()
+
+tj <- left_join(eps, ind, by = c("ticker" = "symbol"))
+```
+
+Filter down the guidance and eps actuals we are interested in.  Then drop empty cells and compute the variance and forecast error for each observation.
+```{r}
+eps <- tj %>%
+  filter(value_type %in% c("Annual_EPS GAAP_Guid", "Annual_EPS GAAP_Act (Dil)")) %>%
+  mutate(value_type = 
+           case_when(
+             value_type == "Annual_EPS GAAP_Guid" ~ "eps_fcst",
+             value_type == "Annual_EPS GAAP_Act (Dil)" ~ "eps_act"
+           )) %>%
+  unique() %>%
+  group_by(ticker, fiscal_year, value_type) %>%
+  spread(value_type, value) %>%
+  drop_na(eps_fcst, eps_act) %>%
+  mutate(eps_var_pct = (eps_fcst - eps_act) / eps_act,
+         fcst_err = abs(eps_var_pct))
+```
+
+Compute the average forecast error for each company and then rank each company by average forecast error relative to other companies within its sector.
+```{r}
+fcst_rank <- eps %>% 
+  group_by(sector) %>%
+  mutate(avg_sector_fcst_err = mean(fcst_err)) %>%
+  ungroup() %>%
+  group_by(sector, ticker, name) %>%
+  summarise(avg_comp_fcst_err = mean(fcst_err)) %>%
+  ungroup() %>%
+  group_by(sector) %>%
+  mutate(fcst_rank_sector = min_rank(avg_comp_fcst_err)) %>%
+  arrange(sector, desc(-fcst_rank_sector))
+
+fcst_rank
+```
+
